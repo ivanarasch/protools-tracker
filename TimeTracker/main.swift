@@ -1,0 +1,501 @@
+import AppKit
+import ApplicationServices
+import ServiceManagement
+
+let dayFmt: DateFormatter = {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.dateFormat = "yyyy-MM-dd"
+    return f
+}()
+
+func isProTools(_ app: NSRunningApplication) -> Bool {
+    isProToolsProcess(name: app.localizedName, bundleID: app.bundleIdentifier, isRegular: app.activationPolicy == .regular)
+}
+
+private func title(of window: AXUIElement) -> String? {
+    var t: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &t) == .success,
+          let s = t as? String, !s.isEmpty else { return nil }
+    return s
+}
+
+/// The .ptx a session window has open. Pro Tools reports it as the window's document.
+private func documentPath(of window: AXUIElement) -> String? {
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(window, kAXDocumentAttribute as CFString, &v) == .success,
+          let value = v else { return nil }
+    if let s = value as? String { return pathFromDocumentValue(s) }
+    if CFGetTypeID(value) == CFURLGetTypeID() { return (value as! CFURL as URL).path }
+    return nil
+}
+
+enum WindowRead {
+    case session(title: String, document: String?)   // found an Edit/Mix/… window, and the .ptx it has open
+    case noSession         // windows were readable, but none is a session (Dashboard, Open dialog, between sessions)
+    case unreadable        // Accessibility call failed — says nothing about what's open
+}
+
+func readWindow(of app: NSRunningApplication) -> WindowRead {
+    let el = AXUIElementCreateApplication(app.processIdentifier)
+    // Main window first, then focused: the Edit/Mix window, not a dialog or plug-in
+    // window that happens to be reported as main/focused (e.g. a "Missing AAX
+    // Plugins" alert or the Open dialog) — those must never become a project name.
+    for attr in [kAXMainWindowAttribute, kAXFocusedWindowAttribute] {
+        var win: CFTypeRef?
+        if AXUIElementCopyAttributeValue(el, attr as CFString, &win) == .success, let w = win,
+           let s = title(of: w as! AXUIElement), looksLikeSessionWindow(s) {
+            return .session(title: s, document: documentPath(of: w as! AXUIElement))
+        }
+    }
+    // Neither resolved — scan every window, but still only accept one that looks like a real session window.
+    var winsRef: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(el, kAXWindowsAttribute as CFString, &winsRef) == .success,
+          let wins = winsRef as? [AXUIElement] else { return .unreadable }
+    for w in wins {
+        if let s = title(of: w), looksLikeSessionWindow(s) { return .session(title: s, document: documentPath(of: w)) }
+    }
+    return .noSession
+}
+
+final class Store {
+    let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("ProToolsTimeTracker")
+    var log: [String: [String: Int]] = [:]                  // project -> day -> seconds
+    var acts: [String: [String: [String: Int]]] = [:]       // project -> day -> activity -> seconds
+    var links: [String: String] = [:]                       // project -> session folder
+
+    init() {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Pick up data from the earlier Python script, once.
+        let old = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".protools-tracker")
+        for name in ["log.json", "links.json"] {
+            let new = dir.appendingPathComponent(name)
+            if !FileManager.default.fileExists(atPath: new.path) {
+                try? FileManager.default.copyItem(at: old.appendingPathComponent(name), to: new)
+            }
+        }
+        log = read("log.json") ?? [:]
+        acts = read("activities.json") ?? [:]
+        links = read("links.json") ?? [:]
+        // Earlier versions sometimes logged Pro Tools' own window title, or a dialog/
+        // alert title, as if it were a session name. Clean those out.
+        let dialogTitles: Set<String> = ["Open", "Save", "Save As", "Save Session Copy In",
+            "Import Audio", "Import Session Data", "Missing AAX Plugins", "Missing Fonts",
+            "Warning", "Alert", "New Session", "New Tracks", "Bounce", "Bounce to Disk",
+            "Consolidate", "Relink"]
+        for k in log.keys where k.hasPrefix("Pro Tools") || dialogTitles.contains(k) {
+            log.removeValue(forKey: k); acts.removeValue(forKey: k)
+        }
+    }
+
+    func read<T: Decodable>(_ name: String) -> T? {
+        guard let d = try? Data(contentsOf: dir.appendingPathComponent(name)) else { return nil }
+        return try? JSONDecoder().decode(T.self, from: d)
+    }
+
+    func write<T: Encodable>(_ value: T, _ name: String) {
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let d = try? enc.encode(value) { try? d.write(to: dir.appendingPathComponent(name)) }
+    }
+
+    func save() {
+        write(log, "log.json")
+        write(acts, "activities.json")
+        write(links, "links.json")
+    }
+
+    func fullCSV() -> String { buildFullCSV(log: log, acts: acts) }
+
+    func projectCSV(_ project: String) -> String { buildProjectCSV(project: project, log: log, acts: acts) }
+
+    /// Whether to keep a "<project> - Pro Tools Hours.csv" inside each session folder.
+    var writeCSVs = UserDefaults.standard.object(forKey: "writeSessionCSV") as? Bool ?? true
+
+    /// Keeps this project's hours CSV up to date inside its session folder, so the hours
+    /// travel with the session without any manual export step.
+    func writeProjectCSV(_ project: String) {
+        guard writeCSVs, let folder = links[project] else { return }
+        let url = URL(fileURLWithPath: folder).appendingPathComponent("\(project) - Pro Tools Hours.csv")
+        try? projectCSV(project).write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Two different session folders can share a name ("Session", "Final Mix"). The second one
+    /// gets its parent folder added, so their hours don't get merged into one project.
+    func uniqueProject(_ name: String, folder: String) -> String {
+        if let existing = links[name], existing != folder, FileManager.default.fileExists(atPath: existing) {
+            let parent = URL(fileURLWithPath: folder).deletingLastPathComponent().lastPathComponent
+            return "\(name) (\(parent))"
+        }
+        return name
+    }
+
+    /// Ties a project to its session folder, and folds in time already logged under the
+    /// session names of the .ptx files in that folder. Does nothing if it's already linked.
+    func link(project: String, folder: String) {
+        guard links[project] != folder else { return }
+        links[project] = folder
+        for session in sessionFiles(in: folder) where session != project {
+            if let days = log.removeValue(forKey: session) {
+                for (d, s) in days { log[project, default: [:]][d, default: 0] += s }
+            }
+            if let days = acts.removeValue(forKey: session) {
+                for (d, byAct) in days { for (a, s) in byAct { acts[project, default: [:]][d, default: [:]][a, default: 0] += s } }
+            }
+        }
+        save()
+        writeProjectCSV(project)
+    }
+
+    func sessionFiles(in folder: String) -> [String] {
+        let items = (try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? []
+        return items.filter { $0.hasSuffix(".ptx") || $0.hasSuffix(".ptf") }
+            .map { ($0 as NSString).deletingPathExtension }
+    }
+
+    /// Map a session name to its linked project, else keep the session name.
+    func resolve(_ session: String) -> String {
+        for (project, folder) in links where sessionFiles(in: folder).contains(session) { return project }
+        return session
+    }
+
+    func addTime(project: String, activity: String, seconds: Int) {
+        let day = dayFmt.string(from: Date())
+        log[project, default: [:]][day, default: 0] += seconds
+        acts[project, default: [:]][day, default: [:]][activity, default: 0] += seconds
+    }
+
+    func total(_ project: String) -> Int { log[project]?.values.reduce(0, +) ?? 0 }
+
+    func activityTotals(_ project: String) -> [String: Int] {
+        var out: [String: Int] = [:]
+        for (_, day) in acts[project] ?? [:] { for (a, s) in day { out[a, default: 0] += s } }
+        return out
+    }
+}
+
+final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    let store = Store()
+    let watcher = RecordingWatcher()
+    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    var current: String?         // project currently being worked on
+    var lastSession: String?
+    var lastTitle: String?       // last Pro Tools window title seen (shown in the menu for troubleshooting)
+    var guess: String?           // activity guessed from the Edit/Mix window
+    var noSessionOpen = false    // Pro Tools is in front but has no session window open
+    var openProject: String?     // project and folder found from the open session file's own path
+    var openFolder: String?
+    var docSession: String?      // the session name those were read for
+    var nowActivity: String?
+    var nowSource = ""
+    var notCounting = ""         // why the current tick isn't adding time, if it isn't
+    var paused = false
+    var manual: String? = UserDefaults.standard.string(forKey: "manualActivity")
+
+    func applicationDidFinishLaunching(_ n: Notification) {
+        let menu = NSMenu()
+        menu.delegate = self
+        item.menu = menu
+        refreshTitle()
+        if !AXIsProcessTrusted() { requestAccessibility() }
+        // .common keeps ticking while a menu is open (a default-mode timer pauses during menu
+        // tracking, so time was silently lost whenever the menu was showing).
+        let timer = Timer(timeInterval: poll, target: self, selector: #selector(tick), userInfo: nil, repeats: true)
+        RunLoop.main.add(timer, forMode: .common)
+        _ = observe()   // show the open session straight away instead of after the first tick
+    }
+
+    /// How wide the menu bar item can be before macOS hides it. The item grows leftwards from its
+    /// right edge, and on a notched MacBook the room ends where the notch's right-hand area starts.
+    func titleRoom() -> CGFloat {
+        guard let win = item.button?.window, win.frame.width > 0 else { return 110 }   // not laid out yet: stay small
+        let leftLimit = (win.screen ?? NSScreen.main)?.auxiliaryTopRightArea?.minX ?? (win.frame.maxX - 240)
+        return max(40, win.frame.maxX - leftLimit - 12)
+    }
+
+    func refreshTitle() {
+        let icon = paused ? "⏸" : "⏱"
+        let font = item.button?.font ?? NSFont.menuBarFont(ofSize: 0)
+        item.button?.title = fitTitle(icon: icon, name: current, time: current.map { fmt(store.total($0)) },
+                                      maxWidth: titleRoom()) {
+            NSAttributedString(string: $0, attributes: [.font: font]).size().width + 23   // 23 = the button's own padding
+        }
+    }
+
+    /// Forget the previous session so it can't be credited with time once it's closed.
+    func forgetSession() {
+        lastSession = nil; lastTitle = nil; guess = nil
+        openProject = nil; openFolder = nil; docSession = nil
+        current = nil; nowActivity = nil
+    }
+
+    /// The project for the open session: the one found from its file path, else matched by name.
+    var projectNow: String {
+        if let p = openProject, lastSession == docSession { return p }
+        return store.resolve(lastSession ?? "Unknown session")
+    }
+
+    /// Works out which session is open and updates the menu bar and menu to match.
+    /// Never counts time, so it's safe to call whenever the display should be fresh.
+    /// Returns nil when Pro Tools isn't running.
+    func observe() -> (pt: NSRunningApplication, front: Bool)? {
+        guard let pt = NSWorkspace.shared.runningApplications.first(where: isProTools) else {
+            // Pro Tools isn't running: a fresh launch must not inherit the last session.
+            forgetSession(); noSessionOpen = false; refreshTitle()
+            return nil
+        }
+        let front = NSWorkspace.shared.frontmostApplication.map(isProTools) ?? false
+        noSessionOpen = false
+        switch readWindow(of: pt) {
+        case .session(let title, let document):
+            lastTitle = title
+            if let name = sessionName(title), !name.hasPrefix("Pro Tools") {
+                lastSession = name
+                if let document {
+                    // Pro Tools says exactly where this session lives, so there's nothing to link by hand.
+                    let id = sessionIdentity(documentPath: document,
+                                             hasAudioFolder: { FileManager.default.fileExists(atPath: $0 + "/Audio Files") })
+                    if let folder = id.folder {
+                        let project = store.uniqueProject(id.project, folder: folder)
+                        store.link(project: project, folder: folder)
+                        openProject = project; openFolder = folder
+                    } else {
+                        openProject = id.project; openFolder = nil
+                    }
+                    docSession = name
+                } else if name != docSession {
+                    // A session whose file we couldn't locate: don't keep crediting the last one's folder.
+                    openProject = nil; openFolder = nil; docSession = nil
+                }
+                current = projectNow   // known as soon as the window is read, not only once time is counted
+            }
+            if let a = windowActivity(title) { guess = a }
+        case .noSession:
+            // Dashboard, Open dialog, or between sessions. Only trust this while Pro Tools is
+            // in front — a window on another Space can be hidden from Accessibility.
+            if front { forgetSession(); noSessionOpen = true }
+        case .unreadable:
+            break   // keep what we had; a failed read isn't evidence the session changed
+        }
+        refreshTitle()
+        return (pt, front)
+    }
+
+    @objc func tick() {
+        guard !paused, let seen = observe() else { return }
+        let front = seen.front
+        // Watch the open session's own Audio Files folder for growing files. If we couldn't
+        // work out which session that is (e.g. Accessibility access not granted), fall back to
+        // watching every known folder, so recording is never missed just because the name didn't resolve.
+        var recordingProject: String?
+        if let p = openProject, let f = openFolder, lastSession == docSession {
+            if watcher.check(folder: f) { recordingProject = p }
+        } else {
+            for (linkedProject, folder) in store.links where watcher.check(folder: folder) {
+                recordingProject = linkedProject
+            }
+        }
+
+        // No session open (and nothing being recorded): there's no project to credit this time to.
+        if noSessionOpen && recordingProject == nil { refreshTitle(); return }
+
+        let project = recordingProject ?? projectNow
+        let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
+        // Recording counts even when Pro Tools is in the background or you're away from the keyboard.
+        guard (front && idle < idleLimit) || recordingProject != nil else {
+            nowActivity = nil
+            notCounting = front ? "Not counting — no keyboard or mouse activity for 10+ minutes"
+                                : "Not counting — Pro Tools isn't the front app"
+            return
+        }
+        notCounting = ""
+
+        // Detected recording beats a manual tag, which beats the Edit/Mix window guess.
+        if recordingProject != nil { nowActivity = "Recording"; nowSource = "detected" }
+        else if let m = manual { nowActivity = m; nowSource = "manual" }
+        else if let g = guess { nowActivity = g; nowSource = "from window" }
+        else { nowActivity = unspecified; nowSource = "" }
+
+        current = project
+        store.addTime(project: project, activity: nowActivity!, seconds: Int(poll))
+        store.save()
+        store.writeProjectCSV(project)
+        refreshTitle()
+    }
+
+    // MARK: menu
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        func add(_ title: String, _ action: Selector?) -> NSMenuItem {
+            let i = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            i.target = self
+            menu.addItem(i)
+            return i
+        }
+
+        if !AXIsProcessTrusted() {
+            _ = add("⚠︎ Allow Accessibility access (needed to read session names)…", #selector(requestAccessibility))
+            menu.addItem(.separator())
+        }
+
+        let seen = observe()   // refresh now, so this never shows a stale or empty project
+        if seen == nil {
+            _ = add("Pro Tools isn't running", nil)
+        } else if noSessionOpen {
+            _ = add("No session open in Pro Tools", nil)
+        } else if let c = current {
+            _ = add("Project: \(c)", nil)
+        }
+        if paused {
+            _ = add("Paused", nil)
+        } else if let a = nowActivity {
+            _ = add("Now: \(a)" + (nowSource.isEmpty ? "" : " (\(nowSource))"), nil)
+        } else if seen != nil, !noSessionOpen, !notCounting.isEmpty {
+            _ = add(notCounting, nil)
+        }
+        if let c = current, store.links[c] == nil {
+            _ = add("Couldn't find this session's folder — use Link Session Folder… to detect recording", nil)
+        }
+        if let t = lastTitle { _ = add("Window: \(t)", nil) }
+        if menu.items.last?.isSeparatorItem == false { menu.addItem(.separator()) }
+
+        let projects = store.log.keys.sorted { store.total($0) > store.total($1) }
+        if projects.isEmpty {
+            _ = add("No time logged yet — open a session in Pro Tools", nil)
+        }
+        for p in projects {
+            let mark = (p == current && !paused) ? "● " : ""
+            let parent = NSMenuItem(title: "\(mark)\(p) — \(fmt(store.total(p)))", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            let by = store.activityTotals(p)
+            for name in activities + [unspecified] where (by[name] ?? 0) > 0 {
+                sub.addItem(NSMenuItem(title: "\(name) — \(fmt(by[name]!))", action: nil, keyEquivalent: ""))
+            }
+            let rest = store.total(p) - by.values.reduce(0, +)
+            if rest >= 60 {
+                sub.addItem(NSMenuItem(title: "Before activity tracking — \(fmt(rest))", action: nil, keyEquivalent: ""))
+            }
+            if sub.items.isEmpty { sub.addItem(NSMenuItem(title: "No breakdown yet", action: nil, keyEquivalent: "")) }
+            if store.links[p] != nil, store.writeCSVs {
+                sub.addItem(.separator())
+                sub.addItem(NSMenuItem(title: "CSV kept up to date in session folder", action: nil, keyEquivalent: ""))
+            }
+            parent.submenu = sub
+            menu.addItem(parent)
+        }
+        menu.addItem(.separator())
+
+        let actParent = NSMenuItem(title: "Activity: " + (manual ?? "Auto"), action: nil, keyEquivalent: "")
+        let actMenu = NSMenu()
+        let auto = NSMenuItem(title: "Auto (from Edit/Mix window)", action: #selector(setActivity(_:)), keyEquivalent: "")
+        auto.target = self
+        auto.representedObject = ""
+        auto.state = manual == nil ? .on : .off
+        actMenu.addItem(auto)
+        actMenu.addItem(.separator())
+        for name in activities {
+            let i = NSMenuItem(title: name, action: #selector(setActivity(_:)), keyEquivalent: "")
+            i.target = self
+            i.representedObject = name
+            i.state = manual == name ? .on : .off
+            actMenu.addItem(i)
+        }
+        actParent.submenu = actMenu
+        menu.addItem(actParent)
+        menu.addItem(.separator())
+
+        _ = add("Link Session Folder…", #selector(linkFolder))
+        if !store.links.isEmpty {
+            let sub = NSMenu()
+            for name in store.links.keys.sorted() {
+                let i = NSMenuItem(title: name, action: #selector(unlink(_:)), keyEquivalent: "")
+                i.target = self
+                sub.addItem(i)
+            }
+            let parent = NSMenuItem(title: "Unlink Folder", action: nil, keyEquivalent: "")
+            parent.submenu = sub
+            menu.addItem(parent)
+        }
+        _ = add("Export All Projects CSV…", #selector(exportAllCSV))
+        let csvItem = add("Save Hours CSV in Session Folders", #selector(toggleSessionCSV))
+        csvItem.state = store.writeCSVs ? .on : .off
+        menu.addItem(.separator())
+
+        _ = add(paused ? "Resume Tracking" : "Pause Tracking", #selector(togglePause))
+        let login = add("Launch at Login", #selector(toggleLogin))
+        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(.separator())
+        _ = add("Quit", #selector(quit))
+    }
+
+    @objc func setActivity(_ sender: NSMenuItem) {
+        let v = sender.representedObject as? String ?? ""
+        manual = v.isEmpty ? nil : v
+        UserDefaults.standard.set(manual, forKey: "manualActivity")
+    }
+
+    @objc func requestAccessibility() {
+        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(opts)
+    }
+
+    @objc func linkFolder() {
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.message = "Choose the Pro Tools session folder (the one containing the .ptx file)"
+        panel.prompt = "Link"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if store.sessionFiles(in: url.path).isEmpty {
+            let a = NSAlert()
+            a.messageText = "No session file found"
+            a.informativeText = "There's no .ptx or .ptf file directly inside “\(url.lastPathComponent)”. Choose the folder that contains the session file."
+            a.runModal()
+            return
+        }
+        store.link(project: store.uniqueProject(url.lastPathComponent, folder: url.path), folder: url.path)
+        refreshTitle()
+    }
+
+    @objc func unlink(_ sender: NSMenuItem) {
+        store.links.removeValue(forKey: sender.title)
+        store.save()
+    }
+
+    @objc func exportAllCSV() {
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "protools-hours-all-projects.csv"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? store.fullCSV().write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    @objc func toggleSessionCSV() {
+        store.writeCSVs.toggle()
+        UserDefaults.standard.set(store.writeCSVs, forKey: "writeSessionCSV")
+    }
+
+    @objc func togglePause() { paused.toggle(); refreshTitle() }
+
+    @objc func toggleLogin() {
+        let svc = SMAppService.mainApp
+        do { if svc.status == .enabled { try svc.unregister() } else { try svc.register() } }
+        catch {
+            let a = NSAlert()
+            a.messageText = "Couldn't change Launch at Login"
+            a.informativeText = error.localizedDescription
+            a.runModal()
+        }
+    }
+
+    @objc func quit() { NSApp.terminate(nil) }
+}
+
+let app = NSApplication.shared
+let delegate = App()
+app.delegate = delegate
+app.setActivationPolicy(.accessory)
+app.run()

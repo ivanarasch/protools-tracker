@@ -1,0 +1,31 @@
+# On every push and pull request: run the tests, build the app, and save the .zip as a download.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-and-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test tools
+        run: pip install pytest
+
+      - name: Run tests
+        run: ./test.sh
+
+      - name: Build app
+        run: ./build.sh
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pro-Tools-Time-Tracker
+          path: build/Pro Tools Time Tracker.zip
