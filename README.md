@@ -45,10 +45,10 @@ Data is stored in `~/Library/Application Support/ProToolsTimeTracker/`.
 
 ## CI/CD
 
-Every push and pull request runs a GitHub Actions pipeline on macOS that:
+Every time code is pushed, GitHub Actions automatically:
 
-1. Runs the Swift and Python test suites
-2. Builds the universal app with `build.sh`
-3. Uploads the zipped app as a build artifact
+1. Runs all the tests (Swift and Python) to catch anything that broke
+2. Builds the app
+3. Saves the built app so it can be downloaded
 
-Pushing a version tag (for example `v1.9`) also publishes the app as a GitHub Release with auto-generated release notes.
+When a new version is tagged (for example `v1.9`), it also publishes the app on the [Releases](https://github.com/ivanarasch/protools-tracker/releases) page.
