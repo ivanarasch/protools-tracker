@@ -1,9 +1,13 @@
 # On every push and pull request: run the tests, build the app, and save the .zip as a download.
+# Pushing a version tag (like v1.9) also publishes the .zip as a public GitHub Release.
 name: CI
 
 on:
   push:
   pull_request:
+
+permissions:
+  contents: write   # needed to create releases
 
 jobs:
   test-and-build:
@@ -29,3 +33,10 @@ jobs:
         with:
           name: Pro-Tools-Time-Tracker
           path: build/Pro Tools Time Tracker.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/Pro Tools Time Tracker.zip
+          generate_release_notes: true
