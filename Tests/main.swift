@@ -75,5 +75,18 @@ check(buildProjectCSV(project: "Song", log: log, acts: acts),
 check(buildFullCSV(log: log, acts: acts).hasPrefix("project,date,activity,hours\n\"Song\",2026-01-01,Mixing,1.00\n"),
       true, "full CSV has project column")
 
+// groupProjects: the menu shows the most recent few, the rest go under "Older Projects"
+let days = ["Old": "2026-09-30", "Mid": "2026-10-02", "New": "2026-10-12", "Newest": "2026-11-02"]
+let hours = ["Old": 100, "Mid": 5000, "New": 200, "Newest": 50]
+let groups = groupProjects(lastDay: days, total: hours, current: nil, limit: 2)
+check(groups.recent, ["Newest", "New"], "most recently worked come first")
+check(groups.older, ["Mid", "Old"], "the rest are older, still most recent first")
+check(groupProjects(lastDay: days, total: hours, current: "Old", limit: 2).recent, ["Old", "Newest"],
+      "the open project jumps to the top")
+check(groupProjects(lastDay: ["A": "2026-10-01", "B": "2026-10-01"], total: ["A": 10, "B": 99], current: nil, limit: 5).recent,
+      ["B", "A"], "same day: more hours first")
+check(groupProjects(lastDay: days, total: hours, current: nil, limit: 10).older, [], "few projects: nothing is tucked away")
+check(groupProjects(lastDay: [:], total: [:], current: nil, limit: 6).recent, [], "no projects")
+
 print("\(count - failures)/\(count) checks passed")
 exit(failures == 0 ? 0 : 1)

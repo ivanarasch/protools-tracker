@@ -21,6 +21,7 @@ Requires macOS 13 or later. Runs on both Apple Silicon and Intel Macs.
 - **Tags activity.** Time in the Edit window counts as Editing, the Mix window as Mixing, and it detects Recording by watching for audio files that keep growing. You can also set the activity by hand (Recording, Editing, Mixing, Mastering, Other).
 - **Exports hours to CSV**, either one file for all projects or a `<project> - Pro Tools Hours.csv` kept up to date inside each session folder.
 - **Fits the menu bar.** The title shortens itself so macOS doesn't hide it behind the notch.
+- **Keeps the menu short.** The project you're in comes first, then the most recently worked on. Only the 6 most recent are listed; the rest go under **Older Projects**.
 - Optional **Launch at Login**.
 
 Data is stored in `~/Library/Application Support/ProToolsTimeTracker/`.

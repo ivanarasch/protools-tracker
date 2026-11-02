@@ -8,6 +8,19 @@ let unspecified = "Unspecified"
 
 func fmt(_ s: Int) -> String { String(format: "%dh %02dm", s / 3600, s % 3600 / 60) }
 
+/// Menu order for the project list: the project you're in right now first, then most recently
+/// worked-on (ties: more total hours first). Only the first `limit` go in the menu itself and the
+/// rest are tucked into an "Older Projects" submenu, so the menu stays short however many sessions pile up.
+func groupProjects(lastDay: [String: String], total: [String: Int], current: String?, limit: Int)
+    -> (recent: [String], older: [String]) {
+    var order = lastDay.keys.sorted { a, b in
+        let (da, db) = (lastDay[a] ?? "", lastDay[b] ?? "")
+        return da != db ? da > db : (total[a] ?? 0, a) > (total[b] ?? 0, b)
+    }
+    if let c = current, let i = order.firstIndex(of: c) { order.remove(at: i); order.insert(c, at: 0) }
+    return (Array(order.prefix(limit)), Array(order.dropFirst(limit)))
+}
+
 /// The menu bar title: "⏱ 15. REDENCION 6 · 0h 31m" if that fits in `maxWidth`, else the same with the
 /// name cut short, else just "⏱ 0h 31m", else just "⏱". macOS silently hides a menu bar item that
 /// doesn't fit beside the notch, so the title has to be sized to the room it really has.

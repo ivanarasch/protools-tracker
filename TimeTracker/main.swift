@@ -361,11 +361,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let t = lastTitle { _ = add("Window: \(t)", nil) }
         if menu.items.last?.isSeparatorItem == false { menu.addItem(.separator()) }
 
-        let projects = store.log.keys.sorted { store.total($0) > store.total($1) }
-        if projects.isEmpty {
-            _ = add("No time logged yet — open a session in Pro Tools", nil)
-        }
-        for p in projects {
+        func projectItem(_ p: String) -> NSMenuItem {
             let mark = (p == current && !paused) ? "● " : ""
             let parent = NSMenuItem(title: "\(mark)\(p) — \(fmt(store.total(p)))", action: nil, keyEquivalent: "")
             let sub = NSMenu()
@@ -383,7 +379,22 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 sub.addItem(NSMenuItem(title: "CSV kept up to date in session folder", action: nil, keyEquivalent: ""))
             }
             parent.submenu = sub
-            menu.addItem(parent)
+            return parent
+        }
+
+        let shown = groupProjects(lastDay: store.log.mapValues { $0.keys.max() ?? "" },
+                                  total: store.log.mapValues { $0.values.reduce(0, +) },
+                                  current: current, limit: 6)
+        if shown.recent.isEmpty {
+            _ = add("No time logged yet — open a session in Pro Tools", nil)
+        }
+        for p in shown.recent { menu.addItem(projectItem(p)) }
+        if !shown.older.isEmpty {
+            let older = NSMenuItem(title: "Older Projects (\(shown.older.count))", action: nil, keyEquivalent: "")
+            let olderMenu = NSMenu()
+            for p in shown.older { olderMenu.addItem(projectItem(p)) }
+            older.submenu = olderMenu
+            menu.addItem(older)
         }
         menu.addItem(.separator())
 

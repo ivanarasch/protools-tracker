@@ -20,7 +20,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key><string>com.ivanarasch.protools-time-tracker</string>
   <key>CFBundleExecutable</key><string>ProToolsTimeTracker</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.9</string>
+  <key>CFBundleShortVersionString</key><string>1.10</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
 </dict></plist>
