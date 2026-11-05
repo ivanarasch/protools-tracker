@@ -106,6 +106,13 @@ final class Store {
         write(links, "links.json")
     }
 
+    func remove(project: String) {
+        log.removeValue(forKey: project)
+        acts.removeValue(forKey: project)
+        links.removeValue(forKey: project)
+        save()
+    }
+
     func fullCSV() -> String { buildFullCSV(log: log, acts: acts) }
 
     func projectCSV(_ project: String) -> String { buildProjectCSV(project: project, log: log, acts: acts) }
@@ -198,6 +205,11 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         item.menu = menu
         refreshTitle()
+        // macOS moves this item whenever another menu bar item appears or goes; re-fit right away
+        // instead of waiting up to a poll, which is long enough for it to sit hidden under the notch.
+        NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: nil, queue: .main) { [weak self] n in
+            if let self, let w = n.object as? NSWindow, w === self.item.button?.window { self.refreshTitle() }
+        }
         if !AXIsProcessTrusted() { requestAccessibility() }
         // .common keeps ticking while a menu is open (a default-mode timer pauses during menu
         // tracking, so time was silently lost whenever the menu was showing).
@@ -208,19 +220,29 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// How wide the menu bar item can be before macOS hides it. The item grows leftwards from its
     /// right edge, and on a notched MacBook the room ends where the notch's right-hand area starts.
+    /// Other menu bar items (the orange microphone dot, other apps' icons) come and go and each one
+    /// pushes this item left by its own width, so the room is the tightest seen over the last two
+    /// minutes. Using only the current room made the title grow back whenever one of them left,
+    /// then slide under the notch as soon as it returned.
+    var roomSeen: [(at: Date, room: CGFloat)] = []
+
     func titleRoom() -> CGFloat {
         guard let win = item.button?.window, win.frame.width > 0 else { return 110 }   // not laid out yet: stay small
         let leftLimit = (win.screen ?? NSScreen.main)?.auxiliaryTopRightArea?.minX ?? (win.frame.maxX - 240)
-        return max(40, win.frame.maxX - leftLimit - 12)
+        let now = Date()
+        roomSeen.append((now, max(40, win.frame.maxX - leftLimit - 12)))
+        roomSeen.removeAll { now.timeIntervalSince($0.at) > 120 }
+        return roomSeen.map(\.room).min() ?? 110
     }
 
     func refreshTitle() {
         let icon = paused ? "⏸" : "⏱"
         let font = item.button?.font ?? NSFont.menuBarFont(ofSize: 0)
-        item.button?.title = fitTitle(icon: icon, name: current, time: current.map { fmt(store.total($0)) },
-                                      maxWidth: titleRoom()) {
+        let title = fitTitle(icon: icon, name: current, time: current.map { fmt(store.total($0)) },
+                             maxWidth: titleRoom()) {
             NSAttributedString(string: $0, attributes: [.font: font]).size().width + 23   // 23 = the button's own padding
         }
+        if item.button?.title != title { item.button?.title = title }
     }
 
     /// Forget the previous session so it can't be credited with time once it's closed.
@@ -429,6 +451,21 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             parent.submenu = sub
             menu.addItem(parent)
         }
+        if !store.log.isEmpty {
+            let sub = NSMenu()
+            let all = groupProjects(lastDay: store.log.mapValues { $0.keys.max() ?? "" },
+                                    total: store.log.mapValues { $0.values.reduce(0, +) },
+                                    current: current, limit: .max).recent
+            for p in all {
+                let i = NSMenuItem(title: "\(p) — \(fmt(store.total(p)))", action: #selector(removeProject(_:)), keyEquivalent: "")
+                i.target = self
+                i.representedObject = p
+                sub.addItem(i)
+            }
+            let parent = NSMenuItem(title: "Remove Project…", action: nil, keyEquivalent: "")
+            parent.submenu = sub
+            menu.addItem(parent)
+        }
         _ = add("Export All Projects CSV…", #selector(exportAllCSV))
         let csvItem = add("Save Hours CSV in Session Folders", #selector(toggleSessionCSV))
         csvItem.state = store.writeCSVs ? .on : .off
@@ -474,6 +511,25 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func unlink(_ sender: NSMenuItem) {
         store.links.removeValue(forKey: sender.title)
         store.save()
+    }
+
+    /// Deletes a project's logged hours (and its folder link) after confirming. Used to clear out
+    /// leftovers like "Unknown session" or a misnamed project. CSVs already written into a session
+    /// folder are not touched.
+    @objc func removeProject(_ sender: NSMenuItem) {
+        guard let p = sender.representedObject as? String else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let a = NSAlert()
+        a.alertStyle = .warning
+        a.messageText = "Remove “\(p)”?"
+        var detail = "This deletes its \(fmt(store.total(p))) of logged time. It can't be undone. A CSV already saved in the session folder is left alone."
+        if p == current { detail += " It's open in Pro Tools right now, so tracking will start it again from zero." }
+        a.informativeText = detail
+        a.addButton(withTitle: "Cancel")           // first button is the default, so Return doesn't delete
+        a.addButton(withTitle: "Remove")
+        guard a.runModal() == .alertSecondButtonReturn else { return }
+        store.remove(project: p)
+        refreshTitle()
     }
 
     @objc func exportAllCSV() {
