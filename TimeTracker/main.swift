@@ -36,6 +36,14 @@ enum WindowRead {
     case unreadable        // Accessibility call failed — says nothing about what's open
 }
 
+/// Title of whichever Pro Tools window has focus right now. A plug-in window is "Plug-in: <name>".
+func focusedWindowTitle(of app: NSRunningApplication) -> String? {
+    var win: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(app.processIdentifier),
+                                        kAXFocusedWindowAttribute as CFString, &win) == .success, let w = win else { return nil }
+    return title(of: w as! AXUIElement)
+}
+
 func readWindow(of app: NSRunningApplication) -> WindowRead {
     let el = AXUIElementCreateApplication(app.processIdentifier)
     // Main window first, then focused: the Edit/Mix window, not a dialog or plug-in
@@ -64,6 +72,8 @@ final class Store {
     var log: [String: [String: Int]] = [:]                  // project -> day -> seconds
     var acts: [String: [String: [String: Int]]] = [:]       // project -> day -> activity -> seconds
     var links: [String: String] = [:]                       // project -> session folder
+    var breaks: [String: [String: Int]] = [:]               // project -> day -> idle seconds (not worked time)
+    var plugins: [String: [String: [String: [String: Int]]]] = [:]   // project -> day -> activity -> plug-in -> seconds in front (a split of that activity's time)
 
     init() {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -78,6 +88,19 @@ final class Store {
         log = read("log.json") ?? [:]
         acts = read("activities.json") ?? [:]
         links = read("links.json") ?? [:]
+        breaks = read("breaks.json") ?? [:]
+        if let now: [String: [String: [String: [String: Int]]]] = read("plugins.json") {
+            plugins = now
+        } else if let old: [String: [String: [String: Int]]] = read("plugins.json") {
+            // First version kept plug-in time without saying which activity it was part of. Credit each day's
+            // plug-in time to that day's busiest activity, the most likely home for it.
+            for (project, days) in old {
+                for (day, byPlugin) in days {
+                    let busiest = (acts[project]?[day] ?? [:]).max { $0.value < $1.value }?.key ?? unspecified
+                    plugins[project, default: [:]][day, default: [:]][busiest] = byPlugin
+                }
+            }
+        }
         // Earlier versions sometimes logged Pro Tools' own window title, or a dialog/
         // alert title, as if it were a session name. Clean those out.
         let dialogTitles: Set<String> = ["Open", "Save", "Save As", "Save Session Copy In",
@@ -85,7 +108,7 @@ final class Store {
             "Warning", "Alert", "New Session", "New Tracks", "Bounce", "Bounce to Disk",
             "Consolidate", "Relink"]
         for k in log.keys where k.hasPrefix("Pro Tools") || dialogTitles.contains(k) {
-            log.removeValue(forKey: k); acts.removeValue(forKey: k)
+            log.removeValue(forKey: k); acts.removeValue(forKey: k); breaks.removeValue(forKey: k); plugins.removeValue(forKey: k)
         }
     }
 
@@ -104,18 +127,35 @@ final class Store {
         write(log, "log.json")
         write(acts, "activities.json")
         write(links, "links.json")
+        write(breaks, "breaks.json")
+        write(plugins, "plugins.json")
     }
 
     func remove(project: String) {
         log.removeValue(forKey: project)
         acts.removeValue(forKey: project)
         links.removeValue(forKey: project)
+        breaks.removeValue(forKey: project)
+        plugins.removeValue(forKey: project)
         save()
     }
 
-    func fullCSV() -> String { buildFullCSV(log: log, acts: acts) }
+    func fullCSV() -> String { buildFullCSV(log: log, acts: acts, breaks: breaks, plugins: plugins) }
 
-    func projectCSV(_ project: String) -> String { buildProjectCSV(project: project, log: log, acts: acts) }
+    func projectCSV(_ project: String) -> String {
+        buildProjectCSV(project: project, log: log, acts: acts, breaks: breaks, plugins: plugins)
+    }
+
+    func addPlugin(project: String, activity: String, plugin: String, seconds: Int) {
+        plugins[project, default: [:]][dayFmt.string(from: Date()), default: [:]][activity, default: [:]][plugin, default: 0] += seconds
+    }
+
+    /// Plug-in -> total seconds in front, across all days.
+    func pluginTotals(_ project: String) -> [String: Int] {
+        var out: [String: Int] = [:]
+        for (_, day) in plugins[project] ?? [:] { for (_, byPlugin) in day { for (p, s) in byPlugin { out[p, default: 0] += s } } }
+        return out
+    }
 
     /// Whether to keep a "<project> - Pro Tools Hours.csv" inside each session folder.
     var writeCSVs = UserDefaults.standard.object(forKey: "writeSessionCSV") as? Bool ?? true
@@ -173,7 +213,13 @@ final class Store {
         acts[project, default: [:]][day, default: [:]][activity, default: 0] += seconds
     }
 
+    func addBreak(project: String, seconds: Int) {
+        breaks[project, default: [:]][dayFmt.string(from: Date()), default: 0] += seconds
+    }
+
     func total(_ project: String) -> Int { log[project]?.values.reduce(0, +) ?? 0 }
+
+    func breakTotal(_ project: String) -> Int { breaks[project]?.values.reduce(0, +) ?? 0 }
 
     func activityTotals(_ project: String) -> [String: Int] {
         var out: [String: Int] = [:]
@@ -190,13 +236,14 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var lastSession: String?
     var lastTitle: String?       // last Pro Tools window title seen (shown in the menu for troubleshooting)
     var guess: String?           // activity guessed from the Edit/Mix window
+    var focusedPlugin: String?   // plug-in whose window is in front right now, if any
     var noSessionOpen = false    // Pro Tools is in front but has no session window open
     var openProject: String?     // project and folder found from the open session file's own path
     var openFolder: String?
     var docSession: String?      // the session name those were read for
     var nowActivity: String?
     var nowSource = ""
-    var notCounting = ""         // why the current tick isn't adding time, if it isn't
+    var notCounting = ""          // why the current tick isn't adding time, if it isn't
     var paused = false
     var manual: String? = UserDefaults.standard.string(forKey: "manualActivity")
 
@@ -249,7 +296,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func forgetSession() {
         lastSession = nil; lastTitle = nil; guess = nil
         openProject = nil; openFolder = nil; docSession = nil
-        current = nil; nowActivity = nil
+        current = nil; nowActivity = nil; focusedPlugin = nil
     }
 
     /// The project for the open session: the one found from its file path, else matched by name.
@@ -300,6 +347,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .unreadable:
             break   // keep what we had; a failed read isn't evidence the session changed
         }
+        // Which plug-in (if any) you're working in: its window has focus. The Edit/Mix window stays
+        // the session's main window while a plug-in window floats above it, so this doesn't disturb the above.
+        focusedPlugin = (front && !noSessionOpen) ? focusedWindowTitle(of: pt).flatMap { pluginName(fromWindowTitle: $0) } : nil
         refreshTitle()
         return (pt, front)
     }
@@ -324,11 +374,22 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let project = recordingProject ?? projectNow
         let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
-        // Recording counts even when Pro Tools is in the background or you're away from the keyboard.
-        guard (front && idle < idleLimit) || recordingProject != nil else {
+        // Recording counts even when Pro Tools is in the background or you're away from the keyboard,
+        // so a long take with no input is never mistaken for a break.
+        if recordingProject == nil, front, idle >= idleLimit {
+            // In front but untouched: not work. Log it as break time against the open session instead.
             nowActivity = nil
-            notCounting = front ? "Not counting — no keyboard or mouse activity for 10+ minutes"
-                                : "Not counting — Pro Tools isn't the front app"
+            notCounting = "On break — no keyboard or mouse activity for \(Int(idleLimit / 60))+ minutes"
+            if lastSession != nil {
+                store.addBreak(project: project, seconds: Int(poll))
+                store.save()
+                store.writeProjectCSV(project)
+            }
+            return
+        }
+        guard front || recordingProject != nil else {
+            nowActivity = nil
+            notCounting = "Not counting — Pro Tools isn't the front app"
             return
         }
         notCounting = ""
@@ -341,6 +402,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         current = project
         store.addTime(project: project, activity: nowActivity!, seconds: Int(poll))
+        if let plugin = focusedPlugin { store.addPlugin(project: project, activity: nowActivity!, plugin: plugin, seconds: Int(poll)) }
         store.save()
         store.writeProjectCSV(project)
         refreshTitle()
@@ -377,6 +439,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else if seen != nil, !noSessionOpen, !notCounting.isEmpty {
             _ = add(notCounting, nil)
         }
+        if let p = focusedPlugin, !paused { _ = add("Plug-in: \(p)", nil) }
         if let c = current, store.links[c] == nil {
             _ = add("Couldn't find this session's folder — use Link Session Folder… to detect recording", nil)
         }
@@ -396,6 +459,23 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 sub.addItem(NSMenuItem(title: "Before activity tracking — \(fmt(rest))", action: nil, keyEquivalent: ""))
             }
             if sub.items.isEmpty { sub.addItem(NSMenuItem(title: "No breakdown yet", action: nil, keyEquivalent: "")) }
+            let used = store.pluginTotals(p).filter { $0.value >= 60 }.sorted { ($0.value, $1.key) > ($1.value, $0.key) }
+            if !used.isEmpty {
+                sub.addItem(.separator())
+                let plug = NSMenuItem(title: "Plug-ins", action: nil, keyEquivalent: "")
+                let plugMenu = NSMenu()
+                for (name, secs) in used.prefix(15) {
+                    plugMenu.addItem(NSMenuItem(title: "\(name) — \(fmt(secs))", action: nil, keyEquivalent: ""))
+                }
+                plugMenu.addItem(.separator())
+                plugMenu.addItem(NSMenuItem(title: "Time with the plug-in window in front", action: nil, keyEquivalent: ""))
+                plug.submenu = plugMenu
+                sub.addItem(plug)
+            }
+            if store.breakTotal(p) >= 60 {
+                sub.addItem(.separator())
+                sub.addItem(NSMenuItem(title: "\(breakLabel) (not counted) — \(fmt(store.breakTotal(p)))", action: nil, keyEquivalent: ""))
+            }
             if store.links[p] != nil, store.writeCSVs {
                 sub.addItem(.separator())
                 sub.addItem(NSMenuItem(title: "CSV kept up to date in session folder", action: nil, keyEquivalent: ""))

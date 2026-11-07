@@ -16,10 +16,11 @@ Requires macOS 13 or later. Runs on both Apple Silicon and Intel Macs.
 
 ## What it does
 
-- **Tracks time per session automatically.** Time counts only while Pro Tools is in front and you've used the keyboard or mouse in the last 10 minutes.
+- **Tracks time per session automatically.** Time counts only while Pro Tools is in front and you've used the keyboard or mouse in the last 5 minutes. After that, the idle time is logged as **Break** in the reports instead (not counted in a project's total). Recording is never treated as a break.
 - **Finds the project on its own.** It reads the open `.ptx` file's location, so all versions in one session folder ("Save As" copies) count toward the same project.
 - **Tags activity.** Time in the Edit window counts as Editing, the Mix window as Mixing, and it detects Recording by watching for audio files that keep growing. You can also set the activity by hand (Recording, Editing, Mixing, Mastering, Other).
-- **Exports hours to CSV**, either one file for all projects or a `<project> - Pro Tools Hours.csv` kept up to date inside each session folder.
+- **Tracks which plug-ins you work in.** Time with a plug-in's window in front is logged per plug-in, per project.
+- **Exports hours to CSV**, either one file for all projects or a `<project> - Pro Tools Hours.csv` kept up to date inside each session folder. Each row is either `Activity` (worked time, with a `plugin` column naming the plug-in that was in front, blank if none) or `Break` (idle time). The `Activity` hours add up to the `TOTAL` row exactly, because a plug-in only splits the activity it happened in.
 - **Fits the menu bar.** The title shortens itself so macOS doesn't hide it behind the notch.
 - **Keeps the menu short.** The project you're in comes first, then the most recently worked on. Only the 6 most recent are listed; the rest go under **Older Projects**.
 - Optional **Launch at Login**.
