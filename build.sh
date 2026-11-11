@@ -5,12 +5,14 @@ cd "$(dirname "$0")"
 
 NAME="Pro Tools Time Tracker"
 APP="build/$NAME.app"
-rm -rf build && mkdir -p "$APP/Contents/MacOS" build/obj
+rm -rf build && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build/obj
 
 for arch in arm64 x86_64; do
   swiftc -O -target "$arch-apple-macos13.0" TimeTracker/*.swift -o "build/obj/tracker-$arch"
 done
 lipo -create build/obj/tracker-arm64 build/obj/tracker-x86_64 -output "$APP/Contents/MacOS/ProToolsTimeTracker"
+
+cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -19,6 +21,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>Pro Tools Time Tracker</string>
   <key>CFBundleIdentifier</key><string>com.ivanarasch.protools-time-tracker</string>
   <key>CFBundleExecutable</key><string>ProToolsTimeTracker</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.12</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>

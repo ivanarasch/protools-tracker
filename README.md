@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/icon-1024.png" width="160" alt="Pro Tools Time Tracker icon"></p>
+
 # Pro Tools Time Tracker
 
 [![CI](https://github.com/ivanarasch/protools-tracker/actions/workflows/ci.yml/badge.svg)](https://github.com/ivanarasch/protools-tracker/actions/workflows/ci.yml)
