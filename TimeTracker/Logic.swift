@@ -25,17 +25,31 @@ func groupProjects(lastDay: [String: String], total: [String: Int], current: Str
     return (Array(order.prefix(limit)), Array(order.dropFirst(limit)))
 }
 
-/// The menu bar title: "⏱ 15. REDENCION 6 · 0h 31m" if that fits in `maxWidth`, else the same with the
-/// name cut short, else just "⏱ 0h 31m", else just "⏱". macOS silently hides a menu bar item that
-/// doesn't fit beside the notch, so the title has to be sized to the room it really has.
+/// "11. La Mujer Sin Corazon 6" -> "La Mujer Sin Corazon 6". A leading track/album number ("11. ", "13) ")
+/// says little in the menu bar and takes room the real name needs. Names like "Untitled-2" are left alone.
+func menuBarName(_ name: String) -> String {
+    let rest = name.replacingOccurrences(of: "^\\d+[.)]\\s+", with: "", options: .regularExpression)
+    return rest.isEmpty ? name : rest
+}
+
+/// The menu bar title: "⏱ La Mujer Sin Corazon 6 · 0h 31m" if that fits in `maxWidth`, else the name cut back
+/// to whole words ("⏱ La Mujer… · 0h 31m"), else the first word cut short, else just "⏱ 0h 31m", else just "⏱".
+/// macOS silently hides a menu bar item that doesn't fit beside the notch, so the title has to be sized to
+/// the room it really has.
 func fitTitle(icon: String, name: String?, time: String?, maxWidth: CGFloat, measure: (String) -> CGFloat) -> String {
     guard let name, let time else { return icon }
     func make(_ n: String) -> String { "\(icon) \(n) · \(time)" }
-    if measure(make(name)) <= maxWidth { return make(name) }
-    var n = name
+    let shown = menuBarName(name)
+    if measure(make(shown)) <= maxWidth { return make(shown) }
+    let words = shown.split(separator: " ").map(String.init)
+    for count in stride(from: words.count - 1, through: 1, by: -1) {
+        let candidate = make(words[..<count].joined(separator: " ") + "…")
+        if measure(candidate) <= maxWidth { return candidate }
+    }
+    var n = words.first ?? shown
     while n.count > 3 {
         n = String(n.dropLast())
-        let candidate = make(n.trimmingCharacters(in: .whitespaces) + "…")
+        let candidate = make(n + "…")
         if measure(candidate) <= maxWidth { return candidate }
     }
     let bare = "\(icon) \(time)"
@@ -57,6 +71,15 @@ func windowActivity(_ title: String) -> String? {
     if t.range(of: "^Edit\\s*:|[-–]\\s*Edit$", options: .regularExpression) != nil { return "Editing" }
     if t.range(of: "^Mix\\s*:|[-–]\\s*Mix$", options: .regularExpression) != nil { return "Mixing" }
     return nil
+}
+
+/// Why "Launch at Login" won't survive from where the app is running, or nil if the location is fine.
+/// An app opened straight from Downloads or a disk image is run by macOS from a temporary copy that is gone
+/// by the next login, so the login item would point at nothing.
+func launchAtLoginProblem(appPath: String) -> String? {
+    let temporary = appPath.contains("/AppTranslocation/") || appPath.hasPrefix("/Volumes/") || appPath.contains("/Downloads/")
+    return temporary ? "The app is running from Downloads or a disk image, so it won't be found at your next login. "
+        + "Move “Pro Tools Time Tracker” to your Applications folder, open it from there, then turn Launch at Login on." : nil
 }
 
 /// "Plug-in: FabFilter Pro-C 2" -> "FabFilter Pro-C 2". Pro Tools titles an open plug-in window this way,

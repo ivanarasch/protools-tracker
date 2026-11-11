@@ -8,11 +8,21 @@ No timers to start or stop: open a session and it starts counting.
 
 ## Download
 
-Get the latest `Pro Tools Time Tracker.zip` from [**Releases**](https://github.com/ivanarasch/protools-tracker/releases/latest), unzip it, and move the app to Applications.
+Get the latest `Pro Tools Time Tracker.zip` from [**Releases**](https://github.com/ivanarasch/protools-tracker/releases/latest), unzip it, and **drag the app into your Applications folder** (don't run it from Downloads, or Launch at Login won't find it after a restart).
 
 Requires macOS 13 or later. Runs on both Apple Silicon and Intel Macs.
 
 **First launch:** the app isn't notarized by Apple, so macOS will block it the first time. Right-click the app and choose **Open**, or go to **System Settings → Privacy & Security** and click **Open Anyway**. Then allow **Accessibility** access when asked, so the app can read Pro Tools window titles.
+
+### Other versions
+
+Every version stays available. Open the [Releases page](https://github.com/ivanarasch/protools-tracker/releases), pick a version, and download `Pro.Tools.Time.Tracker.zip` under **Assets**. (The **Compare** menu on a release only compares code; it doesn't download anything.) Direct links:
+
+| Version | Download |
+| --- | --- |
+| v1.12 | [Pro.Tools.Time.Tracker.zip](https://github.com/ivanarasch/protools-tracker/releases/download/v1.12/Pro.Tools.Time.Tracker.zip) |
+| v1.11 | [Pro.Tools.Time.Tracker.zip](https://github.com/ivanarasch/protools-tracker/releases/download/v1.11/Pro.Tools.Time.Tracker.zip) |
+| v1.10 (tagged `v.1.10`) | [Pro.Tools.Time.Tracker.zip](https://github.com/ivanarasch/protools-tracker/releases/download/v.1.10/Pro.Tools.Time.Tracker.zip) |
 
 ## What it does
 
@@ -23,7 +33,7 @@ Requires macOS 13 or later. Runs on both Apple Silicon and Intel Macs.
 - **Exports hours to CSV**, either one file for all projects or a `<project> - Pro Tools Hours.csv` kept up to date inside each session folder. Each row is either `Activity` (worked time, with a `plugin` column naming the plug-in that was in front, blank if none) or `Break` (idle time). The `Activity` hours add up to the `TOTAL` row exactly, because a plug-in only splits the activity it happened in.
 - **Fits the menu bar.** The title shortens itself so macOS doesn't hide it behind the notch.
 - **Keeps the menu short.** The project you're in comes first, then the most recently worked on. Only the 6 most recent are listed; the rest go under **Older Projects**.
-- Optional **Launch at Login**.
+- Optional **Launch at Login**, which tells you if macOS needs your approval or the app is in the wrong place.
 
 Data is stored in `~/Library/Application Support/ProToolsTimeTracker/`.
 

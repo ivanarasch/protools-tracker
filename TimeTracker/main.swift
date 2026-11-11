@@ -274,11 +274,17 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var roomSeen: [(at: Date, room: CGFloat)] = []
 
     func titleRoom() -> CGFloat {
-        guard let win = item.button?.window, win.frame.width > 0 else { return 110 }   // not laid out yet: stay small
-        let leftLimit = (win.screen ?? NSScreen.main)?.auxiliaryTopRightArea?.minX ?? (win.frame.maxX - 240)
         let now = Date()
-        roomSeen.append((now, max(40, win.frame.maxX - leftLimit - 12)))
         roomSeen.removeAll { now.timeIntervalSince($0.at) > 120 }
+        // Just after launch, macOS reports the item at the far left of the screen before it has been placed.
+        // That reading says nothing about the room, and remembering it kept the title bare for two minutes.
+        guard let win = item.button?.window, win.frame.width > 0, let screen = win.screen ?? NSScreen.main else {
+            return roomSeen.map(\.room).min() ?? 110   // not laid out yet: stay small
+        }
+        let leftLimit = screen.auxiliaryTopRightArea?.minX ?? (win.frame.maxX - 240)
+        if win.frame.maxX > leftLimit + 60 {   // placed: its right edge doesn't move with the title's own width
+            roomSeen.append((now, win.frame.maxX - leftLimit - 12))
+        }
         return roomSeen.map(\.room).min() ?? 110
     }
 
@@ -552,8 +558,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
 
         _ = add(paused ? "Resume Tracking" : "Pause Tracking", #selector(togglePause))
-        let login = add("Launch at Login", #selector(toggleLogin))
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        let status = SMAppService.mainApp.status
+        let login = add(status == .requiresApproval ? "Launch at Login — needs your approval…" : "Launch at Login", #selector(toggleLogin))
+        login.state = status == .enabled ? .on : (status == .requiresApproval ? .mixed : .off)
         menu.addItem(.separator())
         _ = add("Quit", #selector(quit))
     }
@@ -629,13 +636,35 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func toggleLogin() {
         let svc = SMAppService.mainApp
-        do { if svc.status == .enabled { try svc.unregister() } else { try svc.register() } }
-        catch {
-            let a = NSAlert()
-            a.messageText = "Couldn't change Launch at Login"
-            a.informativeText = error.localizedDescription
-            a.runModal()
+        NSApp.activate(ignoringOtherApps: true)
+        if svc.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems(); return }
+        if svc.status == .enabled {
+            do { try svc.unregister() } catch { loginAlert("Couldn't turn off Launch at Login", error.localizedDescription) }
+            return
         }
+        if let problem = launchAtLoginProblem(appPath: Bundle.main.bundlePath) {
+            let a = NSAlert()
+            a.alertStyle = .warning
+            a.messageText = "Launch at Login may not work from here"
+            a.informativeText = problem
+            a.addButton(withTitle: "Cancel")
+            a.addButton(withTitle: "Turn On Anyway")
+            guard a.runModal() == .alertSecondButtonReturn else { return }
+        }
+        do { try svc.register() } catch { loginAlert("Couldn't turn on Launch at Login", error.localizedDescription); return }
+        if svc.status == .requiresApproval {
+            // macOS asks before letting a new login item run. Until it's approved, nothing starts at login.
+            loginAlert("One more step", "Turn on “Pro Tools Time Tracker” in System Settings → General → Login Items & Extensions, "
+                       + "or Launch at Login won't work.", openSettings: true)
+        }
+    }
+
+    private func loginAlert(_ title: String, _ detail: String, openSettings: Bool = false) {
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = detail
+        if openSettings { a.addButton(withTitle: "Open System Settings"); a.addButton(withTitle: "Later") }
+        if a.runModal() == .alertFirstButtonReturn, openSettings { SMAppService.openSystemSettingsLoginItems() }
     }
 
     @objc func quit() { NSApp.terminate(nil) }

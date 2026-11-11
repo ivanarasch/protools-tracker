@@ -64,6 +64,19 @@ check(fitTitle(icon: "⏱", name: "A Very Long Song Name", time: "0h 31m", maxWi
 check(fitTitle(icon: "⏱", name: "Song", time: "0h 31m", maxWidth: 2, measure: measure), "⏱", "icon only")
 check(fitTitle(icon: "⏱", name: nil, time: nil, maxWidth: 100, measure: measure), "⏱", "nothing tracked")
 
+// menuBarName / fitTitle: drop the album number and cut at whole words
+check(menuBarName("11. La Mujer Sin Corazon 6"), "La Mujer Sin Corazon 6", "leading number dropped")
+check(menuBarName("13) RINCON 4"), "RINCON 4", "number with a bracket dropped")
+check(menuBarName("Untitled-2"), "Untitled-2", "no numbering to drop")
+check(menuBarName("2024 Mix"), "2024 Mix", "a year is part of the name")
+check(menuBarName("5. "), "5. ", "never reduces a name to nothing")
+check(fitTitle(icon: "⏱", name: "11. La Mujer Sin Corazon 6", time: "1h 04m", maxWidth: 22, measure: measure),
+      "⏱ La Mujer… · 1h 04m", "long name is cut back to whole words, without the number")
+check(fitTitle(icon: "⏱", name: "11. La Mujer Sin Corazon 6", time: "1h 04m", maxWidth: 100, measure: measure),
+      "⏱ La Mujer Sin Corazon 6 · 1h 04m", "when there is room, the whole name without its number")
+check(fitTitle(icon: "⏱", name: "Supercalifragilistic Song", time: "1h 04m", maxWidth: 22, measure: measure).hasPrefix("⏱ Supercal"),
+      true, "a first word that is too long is cut mid-word as a last resort")
+
 // CSV export
 check(csvRow(project: "Say \"Hi\"", date: "2026-01-01", type: "Activity", activity: "Mixing", plugin: "", seconds: 5400),
       "\"Say \"\"Hi\"\"\",2026-01-01,Activity,Mixing,,1.50\n", "quotes are escaped")
@@ -129,6 +142,14 @@ check(buildProjectCSV(project: "Song", log: log, acts: acts, breaks: ["Song": ["
         .hasSuffix("2026-01-01,Break,,,0.50\nTOTAL,Activity,,,2.00\n"), true, "break row follows the activity rows")
 check(buildProjectCSV(project: "Nope", log: log, acts: acts, plugins: plugs), "date,type,activity,plugin,hours\nTOTAL,Activity,,,0.00\n",
       "project with nothing logged")
+
+// Launch at Login only works if the app will still be where it was registered
+check(launchAtLoginProblem(appPath: "/Applications/Pro Tools Time Tracker.app"), nil, "Applications is fine")
+check(launchAtLoginProblem(appPath: "/Users/me/Desktop/protools-tracker/build/Pro Tools Time Tracker.app"), nil, "a normal folder is fine")
+check(launchAtLoginProblem(appPath: "/private/var/folders/x/AppTranslocation/ABC/d/Pro Tools Time Tracker.app") != nil, true,
+      "a translocated copy is flagged")
+check(launchAtLoginProblem(appPath: "/Users/me/Downloads/Pro Tools Time Tracker.app") != nil, true, "Downloads is flagged")
+check(launchAtLoginProblem(appPath: "/Volumes/Tracker/Pro Tools Time Tracker.app") != nil, true, "a disk image is flagged")
 
 // wavByteRate: the real-time data rate in a WAV header (values match files from a real Pro Tools session)
 func wavHeader(rate: Int, channels: Int, bits: Int) -> Data {
