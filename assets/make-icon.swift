@@ -1,5 +1,6 @@
-// Draws the app icon: a rounded speaker with a clock's hands inside its cone and two sound waves.
-// Usage: swiftc assets/make-icon.swift -o /tmp/make-icon && /tmp/make-icon <output folder> [light|dark]
+// Draws the app icon: a speaker with a clock at the corner of its box; the clock's hands are the box's edges (both shapes solid).
+// Usage: swiftc assets/make-icon.swift -o /tmp/make-icon && /tmp/make-icon <output folder> [light|dark] [nowaves] [filled]
+// The shipped icon is made with: /tmp/make-icon assets dark nowaves filled
 // Writes <output folder>/AppIcon.iconset (every size macOS wants) and icon-1024.png.
 import AppKit
 import CoreGraphics
@@ -18,16 +19,25 @@ func drawIcon(_ ctx: CGContext, dark: Bool) {
         ctx.setStrokeColor(CGColor(gray: 0.8, alpha: 1)); ctx.setLineWidth(6); ctx.strokePath()
     }
 
-    // The drawing is laid out around x 230...620, y 300...724, then centred and enlarged.
+    // Layout (idea from the owner's sketch): a conventional speaker, with a clock at the
+    // bottom-left corner of its box. The clock's two hands are the box's left and bottom edges.
+    // Drawn around x 170...715, y 305...770, then centred and scaled.
     ctx.saveGState()
-    ctx.translateBy(x: 512, y: 512); ctx.scaleBy(x: 1.35, y: 1.35); ctx.translateBy(x: -445, y: -512)
+    let waves = !CommandLine.arguments.contains("nowaves")
+    ctx.translateBy(x: 512, y: 512); ctx.scaleBy(x: 1.25, y: 1.25); ctx.translateBy(x: waves ? -443 : -386, y: -538)
     ctx.setStrokeColor(ink); ctx.setFillColor(ink)
     ctx.setLineCap(.round); ctx.setLineJoin(.round)
+    ctx.setLineWidth(22)
 
-    // Speaker outline: a box and a cone. Each corner is a real arc; the radius is how round it is.
+    let centre = CGPoint(x: 330, y: 620)   // clock centre = bottom-left corner of the speaker box
+    let coneHeight: CGFloat = 440          // how tall the speaker's cone is (a regular speaker icon is about as tall as it is wide)
+
+    // Speaker outline: a short box and a short cone. Each corner is a real arc; the radius is how round it is.
+    let boxTop = centre.y - 190, boxRight = centre.x + 150, coneRight = centre.x + 270
+    let midY = (boxTop + centre.y) / 2
     let corners: [(CGPoint, CGFloat)] = [
-        (CGPoint(x: 230, y: 430), 14), (CGPoint(x: 350, y: 430), 20), (CGPoint(x: 500, y: 300), 14),
-        (CGPoint(x: 500, y: 724), 14), (CGPoint(x: 350, y: 594), 20), (CGPoint(x: 230, y: 594), 14)]
+        (CGPoint(x: centre.x, y: boxTop), 12), (CGPoint(x: boxRight, y: boxTop), 18), (CGPoint(x: coneRight, y: midY - coneHeight / 2), 12),
+        (CGPoint(x: coneRight, y: midY + coneHeight / 2), 12), (CGPoint(x: boxRight, y: centre.y), 18), (centre, 1)]
     let outline = CGMutablePath()
     let (first, last) = (corners[0].0, corners[corners.count - 1].0)
     outline.move(to: CGPoint(x: (first.x + last.x) / 2, y: (first.y + last.y) / 2))
@@ -35,19 +45,30 @@ func drawIcon(_ ctx: CGContext, dark: Bool) {
         outline.addArc(tangent1End: corners[i].0, tangent2End: corners[(i + 1) % corners.count].0, radius: corners[i].1)
     }
     outline.closeSubpath()
-    ctx.addPath(outline); ctx.setLineWidth(20); ctx.strokePath()
 
-    // Clock hands inside the cone
-    ctx.setLineWidth(18)
-    ctx.move(to: CGPoint(x: 440, y: 512)); ctx.addLine(to: CGPoint(x: 440, y: 407)); ctx.strokePath()
-    ctx.move(to: CGPoint(x: 440, y: 512)); ctx.addLine(to: CGPoint(x: 376, y: 544)); ctx.strokePath()
-    ctx.fillEllipse(in: CGRect(x: 420, y: 492, width: 40, height: 40))
+    // Clock face, then the speaker outline (the clock's hands are the box's left and bottom edges)
+    let r: CGFloat = 150
+    let face = CGRect(x: centre.x - r, y: centre.y - r, width: 2 * r, height: 2 * r)
+    if CommandLine.arguments.contains("filled") {
+        // Both shapes solid; where they overlap the fill flips to the background colour so the hands still show
+        ctx.fillEllipse(in: face)
+        ctx.addPath(outline); ctx.fillPath()
+        ctx.saveGState()
+        ctx.addEllipse(in: face); ctx.clip()
+        ctx.addPath(outline); ctx.setFillColor(paper); ctx.fillPath()
+        ctx.restoreGState()
+        ctx.move(to: CGPoint(x: centre.x, y: boxTop)); ctx.addLine(to: centre); ctx.addLine(to: CGPoint(x: boxRight, y: centre.y))
+        ctx.strokePath()
+    } else {
+        ctx.strokeEllipse(in: face)
+        ctx.addPath(outline); ctx.strokePath()
+    }
+    ctx.fillEllipse(in: CGRect(x: centre.x - 17, y: centre.y - 17, width: 34, height: 34))
 
     // Sound waves
-    ctx.setLineWidth(20)
     let spread = 38.0 * CGFloat.pi / 180
-    for radius in [110.0, 190.0] as [CGFloat] {
-        ctx.addArc(center: CGPoint(x: 470, y: 512), radius: radius, startAngle: -spread, endAngle: spread, clockwise: false)
+    for radius in (waves ? [70.0, 125.0] : []) as [CGFloat] {
+        ctx.addArc(center: CGPoint(x: coneRight, y: midY), radius: radius, startAngle: -spread, endAngle: spread, clockwise: false)
         ctx.strokePath()
     }
     ctx.restoreGState()
