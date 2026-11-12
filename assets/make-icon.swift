@@ -1,6 +1,6 @@
 // Draws the app icon: a speaker with a clock at the corner of its box; the clock's hands are the box's edges (both shapes solid).
 // Usage: swiftc assets/make-icon.swift -o /tmp/make-icon && /tmp/make-icon <output folder> [light|dark] [nowaves] [filled]
-// The shipped icon is made with: /tmp/make-icon assets dark nowaves filled
+// The shipped icon is made with: /tmp/make-icon assets light nowaves filled
 // Writes <output folder>/AppIcon.iconset (every size macOS wants) and icon-1024.png.
 import AppKit
 import CoreGraphics
