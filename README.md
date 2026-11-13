@@ -22,6 +22,7 @@ Every version stays available. Open the [Releases page](https://github.com/ivana
 
 | Version | Download |
 | --- | --- |
+| v1.14 | [Pro.Tools.Time.Tracker.zip](https://github.com/ivanarasch/protools-tracker/releases/download/v1.14/Pro.Tools.Time.Tracker.zip) |
 | v1.13 | [Pro.Tools.Time.Tracker.zip](https://github.com/ivanarasch/protools-tracker/releases/download/v1.13/Pro.Tools.Time.Tracker.zip) |
 | v1.12 | [Pro.Tools.Time.Tracker.zip](https://github.com/ivanarasch/protools-tracker/releases/download/v1.12/Pro.Tools.Time.Tracker.zip) |
 | v1.11 | [Pro.Tools.Time.Tracker.zip](https://github.com/ivanarasch/protools-tracker/releases/download/v1.11/Pro.Tools.Time.Tracker.zip) |
